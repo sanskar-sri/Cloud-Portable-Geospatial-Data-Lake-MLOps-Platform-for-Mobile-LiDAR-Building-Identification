@@ -181,7 +181,7 @@ The final layer is a per-building row, not a point cloud: `building_id`, footpri
 -->
 **Looker Studio — Building Storey Review Dashboard (BigQuery-backed)**
 
-<img width="1710" alt="Building Storey Review Dashboard" src="PASTE_YOUR_UPLOADED_SCREENSHOT_URL_HERE" />
+<img width="1710" height="1107" alt="Screenshot 2026-08-04 at 4 25 19 PM" src="https://github.com/user-attachments/assets/27b8ae7e-5dce-42b8-b0e5-f90cddd9fa52" />
 
 From the PointNet++ SSG run: 10 final building instances, average 2.1 estimated storeys, measured heights ranging 4.97 m – 8.94 m, with **2 instances routed to a priority-review shortlist** by confidence and QA flags. Instances carrying `oversized_likely_merged` are downgraded to LOW confidence rather than published as clean records.
 

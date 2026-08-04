@@ -1,24 +1,191 @@
 # LiDAR MLOps Platform
 
-> Cloud-portable geospatial data engineering and MLOps platform for mobile LiDAR building identification — Bronze/Silver/Gold data lake, Airflow orchestration, MLflow experiment tracking, DVC dataset versioning, and 3D deep learning segmentation with downstream risk and exposure analytics.
+> End-to-end geospatial data engineering and MLOps platform that turns raw Mobile LiDAR scans into a governed building inventory — medallion data lake, Airflow orchestration, MLflow tracking, DVC versioning, 3D deep-learning segmentation (**0.9794 test mIoU**), and BigQuery/Looker Studio delivery.
 
-[![CI](https://github.com/sanskar-sri/lidar-mlops-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/sanskar-sri/lidar-mlops-platform/actions/workflows/ci.yml)
+[![CI](https://github.com/sanskar-sri/Lidar-MLOps-Platform/actions/workflows/ci.yml/badge.svg)](https://github.com/sanskar-sri/Lidar-MLOps-Platform/actions/workflows/ci.yml)
 ![Python](https://img.shields.io/badge/Python-3.11-blue?style=flat-square)
+![PyTorch](https://img.shields.io/badge/PyTorch-3D_segmentation-EE4C2C?style=flat-square)
 ![Airflow](https://img.shields.io/badge/Apache_Airflow-orchestration-017CEE?style=flat-square)
 ![MLflow](https://img.shields.io/badge/MLflow-experiment_tracking-0194E2?style=flat-square)
 ![DVC](https://img.shields.io/badge/DVC-dataset_versioning-13ADC7?style=flat-square)
+![BigQuery](https://img.shields.io/badge/BigQuery-serving_layer-669DF6?style=flat-square)
 ![Docker](https://img.shields.io/badge/Docker-containerised-2496ED?style=flat-square)
-![Storage](https://img.shields.io/badge/Backblaze_B2-S3_compatible-E02020?style=flat-square)
+![Storage](https://img.shields.io/badge/S3--compatible-Backblaze_B2-E02020?style=flat-square)
+
+---
+
+## At a Glance
+
+| | |
+|---|---|
+| **Problem** | Convert raw street-level Mobile LiDAR into a structured, auditable building inventory |
+| **Dataset** | Paris-Lille-3D MLS benchmark — Velodyne HDL-32E on the L3D2 mobile mapping platform |
+| **Scale** | **111.7M model-ready point entries** across 6,818 Gold blocks (16,384 points × 9 features each) |
+| **Best model** | **PointNet++ SSG — test mIoU 0.9794 · building IoU 0.9695 · overall accuracy 0.9920** |
+| **Benchmarked** | PointNet++ SSG vs. PointNet++ MSG vs. RandLA-Net under one identical input contract and eval protocol |
+| **Held-out test** | 8.5M unique points, reconstructed from overlapping blocks via `orig_idx` — no train/val leakage |
+| **Downstream** | DBSCAN instancing → RANSAC façade refinement → footprints → height → storey counts → QA flags |
+| **Data platform** | Six-zone medallion lake on S3-compatible object storage, Airflow-orchestrated, DVC-versioned |
+| **Control plane** | 15-page Dash application — upload, profile, trigger, monitor, validate, export |
+| **Serving layer** | GeoJSON / GeoPackage / GeoParquet → BigQuery → Looker Studio review dashboard |
 
 ---
 
 ## Overview
 
-I build production-grade geospatial data platforms and MLOps pipelines — processing 119.78M+ mobile LiDAR points through a governed Bronze/Silver/Gold lake, orchestrating preprocessing with Airflow on remote GPU workers, tracking experiments with MLflow, versioning datasets with DVC, and delivering 3D building segmentation (92.82% accuracy) with downstream risk and exposure analytics. Industry background in Snowflake medallion warehouses with dbt Core, BigQuery lakehouses, and cloud data pipelines for global enterprise clients.
+Raw Mobile LiDAR is large, unstructured, and dataset-specific — it is not directly usable for machine learning, and a trained model alone is not a product. This repository closes both gaps: it is a **data platform first and a model repository second**.
 
-Raw mobile LiDAR files are large, unstructured, dataset-specific, and not directly usable for machine learning. This platform bridges that gap — turning raw `.ply`, `.las`, and `.laz` survey files into a governed data lake with dataset registration, metadata analytics, preprocessing orchestration, Silver/Gold artifact validation, training handoff, and experiment-tracking integration.
+It ingests `.ply` / `.las` / `.laz` survey tiles into a governed Bronze/Silver/Gold lake, orchestrates preprocessing with Airflow on a remote GPU worker, trains and compares three point-cloud segmentation architectures with MLflow tracking and DVC versioning, then promotes point-wise predictions into **object-level building instances with footprints, heights, estimated storey counts, confidence values, and QA flags** — published to BigQuery and reviewed in Looker Studio.
 
-**Target use cases:** urban digital twins · smart-city mapping · building inventory generation · flood and disaster risk exposure · infrastructure asset monitoring · geospatial AI data management · catastrophe modelling input data
+The engineering contribution is **integration and reproducibility**, not a new neural network: every stage is versioned, every artifact is addressable by `dataset_id / prep_version / model / run_id`, and every run is traceable from raw tile to final inventory row.
+
+**Target use cases:** urban digital twins · smart-city mapping · building inventory generation · cadastral pre-screening · flood and disaster risk exposure · infrastructure asset monitoring · catastrophe modelling input data
+
+---
+
+## Architecture
+
+```mermaid
+flowchart LR
+    A["Raw MLS tiles<br/>PLY / LAS / LAZ"] --> B["Bronze<br/>source files + manifests"]
+    B --> C["Dataset registry<br/>metadata + Parquet analytics"]
+    C --> D["Dash control plane<br/>upload · profile · trigger · monitor"]
+    D --> E["Airflow preprocessing DAG<br/>remote GPU worker"]
+    E --> F["Silver<br/>cleaned cloud + HAG + normals + density"]
+    F --> G["Gold<br/>.npz blocks — 16384 x 9"]
+    G --> H["Training<br/>PointNet++ SSG / MSG / RandLA-Net"]
+    H --> I["MLflow + DVC<br/>experiments + versioned artifacts"]
+    I --> J["DBSCAN + RANSAC<br/>building instances"]
+    J --> K["Storey estimation<br/>height · confidence · QA flags"]
+    K --> L["GIS exports + BigQuery<br/>Looker Studio inventory dashboard"]
+```
+
+<img width="1710" height="1107" alt="Platform architecture" src="https://github.com/user-attachments/assets/04b8d8b7-33b0-4d89-bef4-807657ae8840" />
+
+---
+
+## Pipeline Stages
+
+### 1 · Ingestion and profiling (Bronze)
+Raw tiles and label maps are uploaded with checksummed manifests. The registry generates dataset metadata, spatial summaries, class mappings, label-availability checks, and Parquet analytics — all inspectable in the Data Explorer before a single GPU cycle is spent.
+
+### 2 · Preprocessing (Silver → Gold)
+Airflow runs coordinate offset normalisation, semantic label remapping, uniform cubic voxelisation, Height-Above-Ground computation, surface-normal estimation, and local density computation, then emits fixed-size model-ready blocks.
+
+| Parameter | Value | Purpose |
+|---|---|---|
+| Voxel size | 0.02 m | Uniform cubic voxelisation |
+| HAG grid | 0.5 m × 0.5 m | Local ground estimation |
+| HAG statistic | 5th percentile Z | Robust ground elevation |
+| Normal radius | 0.5 m | Local surface normal estimation |
+| Density radius | 0.5 m | Local point density |
+| Feature channels | 9 | `x, y, z, HAG, intensity, nx, ny, nz, density` |
+| Points per block | 16,384 | Fixed model input size |
+
+Label remapping collapses the original multi-class scene into a binary target, with an explicit ignore class excluded from both loss and metrics:
+
+| Original class | Pipeline label | Meaning |
+|---|---|---|
+| `c = 2` | `1` | Building |
+| `c ∈ {1,3,4,5,6,7,8,9}` | `0` | Non-building |
+| `c = 0` | `-1` | Ignore (excluded from loss and evaluation) |
+
+**Gold block schema** — every block carries what training, reconstruction, and export all need:
+
+| Key | Shape | Purpose |
+|---|---|---|
+| `feat` | `[16384, 9]` | Model input features |
+| `feat_channels` | variable | Channel names and order (contract validation) |
+| `y` | `[16384]` | Point-wise labels |
+| `xyz_global` | `[16384, 3]` | Global coordinates for reconstruction and export |
+| `orig_idx` | `[16384]` | Original point index for prediction reassembly |
+| `valid_mask` | `[16384]` | Valid vs. padded point tracking |
+| `metadata` | varies | Block ID, split, bounds, dataset info |
+
+**Spatial split** — blocks are split spatially, not randomly, to prevent neighbourhood leakage between train and test:
+
+| Split | Blocks | Points/block | Point entries |
+|---|---|---|---|
+| Train | 2,999 | 16,384 | ~49.1 M |
+| Validation | 1,697 | 16,384 | ~27.8 M |
+| Test | 2,122 | 16,384 | ~34.8 M |
+
+### 3 · Training
+All three architectures train against the same input contract (`[B, 16384, 9] → [B, 16384, 2]`), the same loss, and the same evaluation protocol — so the comparison is genuinely apples-to-apples.
+
+| Setting | Value |
+|---|---|
+| Loss | Weighted Focal Loss (γ = 2.0) |
+| Class weights | `[0.813, 1.187]` — inverse-square-root, normalised to mean 1 |
+| Optimizer | Adam, LR 0.001 |
+| Scheduler | Cosine annealing |
+| Augmentation | Z-rotation 0–2π · XYZ scale 0.8–1.2 · Gaussian jitter 0.01 · random X flip (train only) |
+| Precision | Mixed precision, gradient clipping at max-norm 1.0 |
+| Checkpointing | Best checkpoint selected on **validation** mIoU; test set touched once, at the end |
+
+### 4 · Point → object conversion
+Segmentation gives labels, not buildings. DBSCAN (`eps = 1.5 m`, `min_points = 500`, `min_cluster_points = 2000`) groups predicted building points into candidate instances; RANSAC façade refinement then detects near-vertical planes and splits merged clusters using density-gap and façade orientation/offset cuts. Unsplittable cases are **retained and flagged** rather than silently forced apart — auditability over false precision.
+
+### 5 · Attribution and delivery
+Robust building height is taken as the 95th percentile of valid HAG values, and storey count estimated as `round(H / 3.2 m)`. Outputs are exported as GeoJSON / GeoPackage / GeoParquet, loaded to BigQuery, and surfaced in a Looker Studio review dashboard.
+
+---
+
+## Results
+
+### Segmentation benchmark
+
+| Model | Test mIoU | Building IoU | Non-building IoU | Overall accuracy | Best checkpoint |
+|---|---|---|---|---|---|
+| **PointNet++ SSG** | **0.9794** | **0.9695** | **0.9893** | **0.9920** | Epoch 66 |
+| PointNet++ MSG | 0.9775 | 0.9667 | 0.9883 | 0.9913 | Epoch 64 |
+| RandLA-Net | 0.9156 | 0.8785 | 0.9528 | 0.9648 | Epoch 30 |
+
+### Test-set confusion matrix
+
+| Model | TN | FP | FN | TP |
+|---|---|---|---|---|
+| PointNet++ SSG | 6,282,503 | 48,495 | 19,374 | 2,155,027 |
+| PointNet++ MSG | 6,279,339 | 51,659 | 22,411 | 2,151,990 |
+| RandLA-Net | 6,042,215 | 288,783 | 10,590 | 2,163,811 |
+
+### Derived class-wise rates
+
+| Model | Non-building correct rate | Building recall | Building precision |
+|---|---|---|---|
+| PointNet++ SSG | 0.9923 | 0.9911 | **0.9780** |
+| PointNet++ MSG | 0.9918 | 0.9897 | 0.9765 |
+| RandLA-Net | 0.9544 | **0.9951** | 0.8824 |
+
+> **Why the simpler model won.** PointNet++ MSG is architecturally richer, but multi-scale grouping bought nothing here: the task is binary, and preprocessing already supplies strong geometric priors (HAG, surface normals, local density, intensity) on voxelised blocks. Single-scale grouping was sufficient to separate façades from vegetation, poles, and street furniture.
+>
+> **Why highest recall ≠ best model.** RandLA-Net achieves the best building recall (0.9951) but the worst precision (0.8824) — it over-predicts the building class, generating ~5.9× more false positives than SSG. That noise propagates: it produced 2.46M building points, 25 raw DBSCAN clusters, and 16 fragmented final instances, versus 10 stable instances from SSG. **Upstream precision, not recall, is what controls downstream instance quality.**
+
+### Building instance extraction
+
+| Model | Building points | Raw clusters | Valid initial instances | Final instances (post-RANSAC) | Splits | Silhouette |
+|---|---|---|---|---|---|---|
+| **PointNet++ SSG** | 2,209,005 | 18 | 8 | **10** | 2 | **0.4907** |
+| PointNet++ MSG | 2,209,097 | 20 | 8 | 11 | 2 | 0.4552 |
+| RandLA-Net | 2,462,131 | 25 | 9 | 16 | 4 | 0.3802 |
+
+DBSCAN, RANSAC, and QA parameters were held constant across all three model outputs — so the differences in final instance counts are attributable to upstream segmentation behaviour, not post-processing tuning. Silhouette is computed on XY coordinates without ground truth, so it is an **internal diagnostic, not an instance-segmentation accuracy metric**.
+
+### Building inventory output
+
+The final layer is a per-building row, not a point cloud: `building_id`, footprint geometry, robust height, estimated storeys, floor-height assumption, method, confidence, QA flags, and layer status.
+
+<!--
+  ⬇ Upload your Looker Studio screenshot to this repo (drag it into any GitHub issue/PR comment
+  to get a permanent user-attachments URL) and paste the URL below, replacing this placeholder.
+-->
+**Looker Studio — Building Storey Review Dashboard (BigQuery-backed)**
+
+<img width="1710" alt="Building Storey Review Dashboard" src="PASTE_YOUR_UPLOADED_SCREENSHOT_URL_HERE" />
+
+From the PointNet++ SSG run: 10 final building instances, average 2.1 estimated storeys, measured heights ranging 4.97 m – 8.94 m, with **2 instances routed to a priority-review shortlist** by confidence and QA flags. Instances carrying `oversized_likely_merged` are downgraded to LOW confidence rather than published as clean records.
+
+> **Scope, stated honestly.** Storey counts are a geometry-only baseline with layer status `GEOMETRY_ONLY_PRE_VALIDATION`. They are not validated against cadastral or BD TOPO / BDNB reference data, and are designed as a *review shortlist for official verification* — which is exactly what the dashboard delivers.
 
 ---
 
@@ -28,42 +195,19 @@ Raw mobile LiDAR files are large, unstructured, dataset-specific, and not direct
 
 <img width="1710" alt="LiDAR Platform Home" src="https://github.com/user-attachments/assets/3786e45e-ca3d-4719-885f-d1f6b2c8feaa" />
 
-**Data Explorer — dataset analytics workspace showing 78M+ points indexed across 5 datasets**
+**Data Explorer — dataset analytics workspace with point counts, label availability, and spatial summary**
 
 <img width="1710" alt="Dataset Analytics Workspace" src="https://github.com/user-attachments/assets/98f82a45-e3a1-4511-8ff8-ec710992243f" />
 
-**Rerun 3D viewer — semantically labelled mobile LiDAR point cloud (street scene)**
+**Rerun 3D viewer — semantically labelled MLS point cloud (street scene)**
 
 <img width="1710" alt="Rerun 3D Semantic Label Viewer" src="https://github.com/user-attachments/assets/b6875c50-eaaa-47ab-ba91-c2765ec04977" />
 
 ---
 
-## Architecture
-
-```mermaid
-flowchart LR
-    A["Raw LiDAR files\nPLY / LAS / LAZ"] --> B["Bronze layer\nsource files + manifests"]
-    B --> C["Dataset registry\nmetadata + Parquet analytics"]
-    C --> D["Dash control plane\nupload · explore · trigger · monitor"]
-    D --> E["Airflow preprocessing DAG\nremote workstation / GPU worker"]
-    E --> F["Silver layer\ncleaned point cloud + stats"]
-    F --> G["Gold layer\nmodel-ready blocks + scenes"]
-    G --> H["Training workflow\nPointNet++ / RandLA-Net / PTv3"]
-    H --> I["MLflow + DVC\nexperiments + versioned outputs"]
-    I --> J["Risk & Exposure\nflood scoring · building inventory · GIS export"]
-```
-
-
-
-
-
-<img width="1710" height="1107" alt="Screenshot 2026-05-28 at 2 38 01 PM" src="https://github.com/user-attachments/assets/04b8d8b7-33b0-4d89-bef4-807657ae8840" />
-
----
-
 ## Data Lake Layout
 
-Six-zone layout on Backblaze B2 (S3-compatible) — medallion architecture extended for the full ML lifecycle:
+Six-zone layout on Backblaze B2 (S3-compatible) — medallion architecture extended across the full ML lifecycle:
 
 ```text
 Building-Identification-MLS/
@@ -78,11 +222,9 @@ Building-Identification-MLS/
 │
 ├── 02_preprocessing/
 │   ├── silver_preprocessed_data/
-│   │   └── <dataset_id>/
-│   │       └── <prep_version>/         # cleaned point cloud + stats + density grids
+│   │   └── <dataset_id>/<prep_version>/    # cleaned cloud + stats + density grids
 │   └── gold_model_ready_data/
-│       └── <dataset_id>/
-│           └── <prep_version>/         # model-ready blocks (PointNet++ / PTv3 format)
+│       └── <dataset_id>/<prep_version>/    # model-ready .npz blocks (16384 x 9)
 │
 ├── 03_segmentation/
 │   ├── training_runs/
@@ -92,73 +234,38 @@ Building-Identification-MLS/
 │
 ├── 04_clustering/
 │   └── clustered_final_outputs/
-│       └── <dataset_id>/<prep_version>/<model_name>/<run_id>/   # RANSAC + cluster results
+│       └── <dataset_id>/<prep_version>/<model_name>/<run_id>/   # DBSCAN + RANSAC results
 │
 ├── 05_applications/
-│   ├── gis_exports/
-│   │   └── <dataset_id>/<prep_version>/<model_name>/<run_id>/   # GeoJSON / GeoParquet exports
-│   └── risk_exposure/
-│       └── <dataset_id>/<run_id>/                               # flood / disaster risk outputs
+│   ├── gis_exports/                    # GeoJSON / GeoPackage / GeoParquet
+│   └── risk_exposure/                  # flood / height / confidence scoring outputs
 │
 └── 06_governance/
-    ├── metadata/
-    │   └── datasets/                   # dataset registry JSON files
-    ├── metadata_analytics/
-    │   └── <dataset_id>/               # Parquet analytics: file summary, label distribution,
+    ├── metadata/datasets/              # dataset registry JSON
+    ├── metadata_analytics/<dataset_id>/# Parquet: file summary, label distribution,
     │                                   #   spatial summary, quality checks, density grids, KPIs
-    ├── benchmark_results/              # committed model accuracy and IoU reports
+    ├── benchmark_results/              # committed accuracy and IoU reports
     ├── lineage/                        # dataset-to-run lineage records
     ├── qc_reports/                     # automated quality check outputs
     ├── logs/                           # preprocessing and training run logs
     └── rerun_outputs/                  # Rerun SDK 3D visualisation recordings
 ```
 
----
-
-## Results
-
-Model benchmarks on mobile LiDAR building segmentation (binary: building / non-building):
-
-| Model | Overall accuracy | Building IoU | Non-building IoU | Notes |
-|---|---|---|---|---|
-| PointNet++ | **92.82%**  | — | — | Block-based baseline |
-| PointNet++ MSG | — | — | — | Multi-scale grouping |
-| RandLA-Net | — | — | — | Large-scale efficient baseline |
-| **PTv3** | —| — | — | Best performing architecture |
-
-> Full per-class metrics and dataset-level benchmark reports are committed under `06_governance/benchmark_results/`.
+Everything is addressable by `dataset_id / prep_version / model_name / run_id`, so any inventory row can be traced back to the exact checkpoint, preprocessing version, and source tile that produced it.
 
 ---
 
-## Risk & Exposure Analytics
+## Output Artifacts
 
-The platform computes downstream risk metrics from LiDAR-derived building detection outputs — directly applicable to catastrophe modelling, property exposure management, and insurance analytics workflows:
+| Stage | Artifacts |
+|---|---|
+| Preprocessing | `processed_cloud.npz`, Gold `.npz` blocks, preprocessing metadata, readiness/QC reports |
+| Training | `best_model_checkpoint`, training logs, `test_metrics.json`, `test_predictions.las`, `test_errors.las` |
+| Clustering | `building_instances_initial/refined/final.las`, `building_instances_final_summary.csv`, `building_footprints_final.geojson` / `.gpkg`, `final_instance_qa_report.json`, `final_instances_manifest.json` |
+| Storey estimation | `building_storey_count_final.csv` |
+| Delivery | GIS exports, BigQuery tables, Looker Studio dashboard, lineage and governance reports |
 
-- **Flood depth exposure scoring** — per-building flood risk classification from LiDAR-derived elevation and detection confidence, suitable for integration with regulated flood zone datasets
-- **Building height classification** — low / mid / high-rise categorisation from Z-axis point density in detected building clusters
-- **Detection confidence scoring** — model confidence per detected building cluster for exposure data quality filtering and auditability
-- **Building inventory pipeline** — end-to-end workflow from raw LiDAR scan to structured building inventory with spatial attributes, class labels, and confidence scores
-- **GIS export** — GeoJSON and GeoParquet outputs for spatial join against external hazard zone datasets (flood plains, seismic zones, OSM infrastructure proximity)
-
-This module maps directly to exposure data engineering workflows at catastrophe modelling firms (RMS, AIR, Verisk), re/insurance companies (Swiss Re, Moody's, CoreLogic), and location intelligence platforms (HERE, Precisely, Esri).
-
----
-
-## Platform Workflow
-
-```
-1.  Upload raw .ply / .las / .laz files and label maps
-2.  Validate file integrity with checksums and upload manifests
-3.  Generate dataset metadata, spatial summaries, class mappings, and quality checks
-4.  Explore datasets through the Dash dashboard and Parquet analytics panels
-5.  Trigger preprocessing via Airflow using a minimal run configuration
-6.  Poll Airflow for DAG state, task progress, and failure detail
-7.  Verify Silver outputs: cleaned point cloud, stats, density grids
-8.  Unlock Gold model-ready outputs when the dataset contract is validated
-9.  Monitor training jobs and connect outputs to MLflow / DVC workflows
-10. Run RANSAC clustering on segmentation outputs for building candidate generation
-11. Export GIS outputs and compute risk exposure metrics
-```
+`test_errors.las` — a dedicated misclassified-point cloud for visual error analysis — is deliberately part of the contract, not an afterthought.
 
 ---
 
@@ -167,19 +274,19 @@ This module maps directly to exposure data engineering workflows at catastrophe 
 | Page | Route | Purpose |
 |---|---|---|
 | Home | `/` | Platform overview and live infrastructure health |
-| Data Explorer | `/data-explorer` | Upload raw LiDAR data, browse datasets, inspect Parquet analytics |
+| Data Explorer | `/data-explorer` | Upload raw LiDAR, browse datasets, inspect Parquet analytics |
+| Dataset Readiness | `/dataset-readiness` | Preprocessing gate — metadata, labels, coordinate sanity, block feasibility |
 | Preprocessing | `/preprocessing` | Configure, trigger, and monitor Airflow preprocessing runs |
-| Silver / Gold Outputs | `/silver-gold-outputs` | Validate preprocessing artifacts and dataset contracts |
-| Training | `/training` | Monitor model training workflows |
-| Inference Outputs | `/inference-outputs` | Review segmentation and clustering results |
-| Postprocessing | `/postprocessing` | Downstream model output review |
-| GIS Exports | `/gis-exports` | Browse and download GIS-ready outputs |
+| Silver / Gold Outputs | `/silver-gold-outputs` | Validate preprocessing artifacts and the Gold data contract |
+| Training | `/training` | Model/compute selection, payload preview, run history, GPU worker checks |
+| Inference Outputs | `/inference-outputs` | Segmentation metrics, confusion matrices, prediction files |
+| Postprocessing | `/postprocessing` | Clustering, RANSAC refinement, QA, final instance publishing |
+| GIS Exports | `/gis-exports` | Generate and download GeoJSON / GeoPackage / GeoParquet |
 | Risk Exposure | `/risk-exposure` | Flood depth, building height, and detection confidence scoring |
-| Model Benchmark | `/model-benchmark` | Accuracy, IoU, and latency comparisons across model runs |
-| Lineage & Governance | `/lineage-governance` | Dataset lineage, quality checks, and audit records |
-| Dataset Readiness | `/dataset-readiness` | Gold contract validation before training handoff |
-| Monitoring & Cost | `/monitoring-cost` | Storage growth, processing cost, and pipeline health KPIs |
-| Control Panel | `/control-panel` | Compute node status, service health, and runtime checks |
+| Model Benchmark | `/model-benchmark` | Accuracy, IoU, and latency comparison across runs |
+| Lineage & Governance | `/lineage-governance` | Dataset lineage, quality checks, audit records |
+| Monitoring & Cost | `/monitoring-cost` | Storage growth, processing cost, pipeline health KPIs |
+| Control Panel | `/control-panel` | Compute node status, service health, runtime checks |
 | API Integration | `/api-integration` | External system connections and integration status |
 
 ---
@@ -188,23 +295,10 @@ This module maps directly to exposure data engineering workflows at catastrophe 
 
 | DAG | Trigger | Purpose |
 |---|---|---|
-| `lidar_preprocessing_pipeline` | Manual | Full preprocessing run on the remote GPU workstation |
-| `lidar_training_pipeline` | Manual | Model training against Gold model-ready data |
+| `lidar_preprocessing_pipeline` | Manual | Full Bronze → Silver → Gold run on the remote GPU workstation |
+| `lidar_training_pipeline` | Manual | Model training against Gold model-ready blocks |
 | `dag_health_b2` | Scheduled | B2 reachability and bucket prefix health check |
 | `dag_health_remote` | Scheduled | MLflow, GPU, OS, and runtime health on the workstation |
-
-The Dash controller sends only `{dataset_id, mode, run_id}` to Airflow — pipeline defaults live on the workstation side. Full audit payloads are persisted locally under `data/airflow_preprocessing_requests/`.
-
----
-
-## Model-Ready Dataset Support
-
-| Model family | Data format prepared |
-|---|---|
-| PointNet++ | Block-based HDF5 with point subsampling and local neighbourhood labels |
-| PointNet++ MSG | Multi-scale blocks with variable radius grouping inputs |
-| RandLA-Net | Large-scale scenes with KNN graph precomputation |
-| PTv3 / Pointcept | Scene-level serialised format for transformer-based 3D segmentation |
 
 ---
 
@@ -221,10 +315,12 @@ The Dash controller sends only `{dataset_id, mode, run_id}` to Airflow — pipel
 | Experiment tracking | MLflow |
 | Dataset versioning | DVC |
 | 3D visualisation | Rerun SDK |
-| Deep learning | PyTorch, PointNet++, RandLA-Net, PTv3 |
-| Post-processing | RANSAC clustering, scikit-learn |
+| Deep learning | PyTorch, PointNet++ (SSG/MSG), RandLA-Net |
+| Post-processing | DBSCAN, RANSAC, scikit-learn |
+| Warehouse & BI | BigQuery, Looker Studio |
 | CI | GitHub Actions, ruff |
 | Deployment | Docker, Docker Compose |
+| Training hardware | NVIDIA RTX PRO 5000 Blackwell workstation (Windows 11 GPU worker) |
 
 ---
 
@@ -244,13 +340,11 @@ The Dash controller sends only `{dataset_id, mode, run_id}` to Airflow — pipel
 ├── scripts/
 │   └── compute_node_health_agent.py     # Windows workstation health agent
 ├── tests/                               # Unit tests (pytest)
-├── .github/
-│   └── workflows/
-│       └── ci.yml                       # Lint and import checks on push
+├── .github/workflows/ci.yml             # Lint and import checks on push
 ├── assets/                              # CSS and browser-upload JavaScript
 ├── data/
 │   ├── metadata/                        # Local dataset registry cache
-│   └── metadata_analytics/             # Local Parquet analytics cache
+│   └── metadata_analytics/              # Local Parquet analytics cache
 ├── Dockerfile
 ├── docker-compose.yml
 └── requirements.txt
@@ -262,30 +356,26 @@ The Dash controller sends only `{dataset_id, mode, run_id}` to Airflow — pipel
 
 ```bash
 # 1. Clone and create environment
-git clone https://github.com/sanskar-sri/lidar-mlops-platform.git
-cd lidar-mlops-platform
+git clone https://github.com/sanskar-sri/Lidar-MLOps-Platform.git
+cd Lidar-MLOps-Platform
 python3 -m venv .venv
 source .venv/bin/activate        # Windows: .venv\Scripts\activate
 pip install -r requirements.txt
 
 # 2. Configure environment
 cp .env.example .env
-# Fill in B2, Airflow, and MLflow credentials (see Environment Variables below)
+# Fill in B2, Airflow, and MLflow credentials (see below)
 
 # 3. Run with Docker
 docker compose up --build
 ```
-
-Default local services:
 
 | Service | URL |
 |---|---|
 | Dash app | `http://localhost:8051` |
 | MLflow | `http://localhost:5001` |
 
----
-
-## Environment Variables
+### Environment variables
 
 ```env
 B2_KEY_ID=
@@ -303,35 +393,56 @@ SYSTEM_1_HEALTH_URL=
 SYSTEM_1_AIRFLOW_QUEUE=
 ```
 
+No credentials are committed to this repository — all secrets are supplied via environment variables at runtime.
+
 ---
 
 ## Key Design Decisions
 
-**No heavy compute in the controller**
-The Dash app triggers Airflow and reads artifacts. All preprocessing and model training runs on a remote GPU workstation. The controller never imports point-cloud or deep learning libraries in the request path.
+**No heavy compute in the controller.**
+The Dash app triggers Airflow and reads artifacts; all preprocessing and training runs on a remote GPU workstation. The controller never imports point-cloud or deep-learning libraries in the request path.
 
-**Minimal Airflow conf**
-The controller sends only `{dataset_id, mode, run_id}` to Airflow. Pipeline defaults, paths, and hyperparameters live on the workstation side. Full audit payloads are persisted locally before the DAG is triggered — giving both a reproducible run record and a clean separation between orchestration and configuration.
+**Minimal Airflow conf.**
+The controller sends only `{dataset_id, mode, run_id}`. Pipeline defaults, paths, and hyperparameters live on the worker side. Full audit payloads are persisted locally before the DAG is triggered — giving both a reproducible run record and clean separation between orchestration and configuration.
 
-**Lazy service imports**
-All heavy dependencies (b2sdk, pandas, numpy, plyfile, laspy, pyarrow, open3d) are imported inside function bodies, not at module level. This keeps Dash app startup under 3 seconds regardless of which libraries are installed, and lets the dashboard load before any cloud or model libraries initialise.
+**Lazy service imports.**
+Heavy dependencies (b2sdk, pandas, numpy, plyfile, laspy, pyarrow, open3d) are imported inside function bodies, not at module level. Dash startup stays under 3 seconds regardless of what is installed, and the UI loads before any cloud or model library initialises.
 
-**B2 as the single source of truth**
-Silver and Gold artifacts are always read from B2 after DAG completion — not from local disk. This ensures the dashboard, training environment, and risk module all share the same data layer, eliminating drift between local cache and remote outputs.
+**Object storage as the single source of truth.**
+Silver and Gold artifacts are always read from B2 after DAG completion, never from local disk. Dashboard, training environment, and analytics layer all share one data layer — eliminating drift between local cache and remote outputs.
 
-**S3-portable lake design**
-The bucket layout and all service code use S3-compatible semantics via boto3. Switching from Backblaze B2 to AWS S3 or GCS requires only environment variable changes — no code changes. This makes the architecture directly portable to enterprise AWS or GCP deployments.
+**S3-portable lake design.**
+Bucket layout and service code use S3-compatible semantics via boto3. Moving from Backblaze B2 to AWS S3 or GCS is an environment-variable change, not a code change.
+
+**Readiness gates before expensive jobs.**
+The Dataset Readiness page validates metadata completeness, label availability, coordinate sanity, and block feasibility *before* preprocessing is triggered — failing fast instead of burning GPU hours on a malformed dataset. The Gold data contract is validated the same way before training begins.
+
+**Explicit ignore label.**
+Unlabelled points are retained in the data as `-1` and excluded from both loss computation and metric evaluation, rather than silently folded into the negative class — which would inflate reported accuracy.
+
+---
+
+## Known Limitations
+
+Stated deliberately — these are the boundaries of what the numbers above actually claim.
+
+- **Binary task.** The model is evaluated on building vs. non-building only; it is not tested on distinguishing vegetation, poles, vehicles, or street furniture from each other.
+- **High segmentation accuracy ≠ perfect instances.** False positives can bridge neighbouring buildings; false negatives can fragment true façades. Instance quality is controlled by upstream precision.
+- **DBSCAN parameters are scene-tuned.** `eps = 1.5 m` suits this MLS street geometry; different point densities, street widths, or façade spacings will need re-tuning.
+- **RANSAC cannot separate every merged case.** Shared walls, similar façade orientations, or insufficient vertical plane evidence leave clusters unsplit — these are flagged for review rather than forced.
+- **Silhouette is a diagnostic, not an accuracy metric.** It uses no ground truth and cannot confirm that a final instance maps to exactly one real building.
+- **Storey counts are geometry-only.** A fixed 3.2 m floor-height assumption on a 95th-percentile HAG height, unvalidated against cadastral reference data.
 
 ---
 
 ## Roadmap
 
-- [ ] Complete per-class IoU benchmark table with all four model architectures
-- [ ] GIS export support for CityJSON and 3D Tiles formats
-- [ ] Model comparison dashboard with accuracy, IoU, latency, and confidence summaries
-- [ ] Fire spread risk scoring from inter-building distance and roof type classification
-- [ ] External hazard overlays via OSM Overpass API and open flood-zone datasets (TRCA, PPRI Nord)
-- [ ] Earthquake exposure module — building height category joined against USGS / BRGM seismic hazard zones
+- [ ] Point Transformer v3 (Pointcept) as a fourth benchmarked architecture
+- [ ] Validate storey estimates against BD TOPO / BDNB cadastral reference data
+- [ ] Adaptive DBSCAN parameter selection from local point density statistics
+- [ ] GIS export support for CityJSON and 3D Tiles
+- [ ] External hazard overlays via OSM Overpass API and open flood-zone datasets
+- [ ] Earthquake exposure module — height category joined against USGS / BRGM seismic zones
 - [ ] CI expansion — service import checks, page registration validation, metadata schema tests
 - [ ] Cloud reference architecture with cost-aware AWS / GCP deployment guide
 
@@ -339,9 +450,21 @@ The bucket layout and all service code use S3-compatible semantics via boto3. Sw
 
 ## Research & Acknowledgements
 
-Developed as an M.Tech thesis project at **MNNIT Prayagraj** (Department of Geoinformatics).
+Developed as an M.Tech thesis at **MNNIT Allahabad, Prayagraj** — Geographic Information System (GIS) Cell — under the supervision of **Dr. Manohar Yadav**.
 
-Presented at **SPARC 2026 International Conference, IIT Kanpur** — *Self-Supervised Learning for Near-Miss Pedestrian Risk Detection* — an internationally collaborative research programme supported by the Ministry of Education, Government of India.
+*Building Identification in Mobile LiDAR Data Using Deep Learning* (2026).
+
+Also presented at **SPARC 2026 International Conference, IIT Kanpur** — *Self-Supervised Learning for Near-Miss Pedestrian Risk Detection* — an internationally collaborative research programme supported by the Ministry of Education, Government of India.
+
+Dataset: Paris-Lille-3D (Roynard et al.), acquired with the L3D2 mobile mapping prototype, Mines ParisTech.
+
+---
+
+## Contact
+
+**Sanskar Srivastava** — Data Engineer · Geospatial ML
+
+[GitHub](https://github.com/sanskar-sri) · [LinkedIn](https://linkedin.com/in/sanskar-srivastava-360666170) · sanskaranmol786@gmail.com
 
 ---
 

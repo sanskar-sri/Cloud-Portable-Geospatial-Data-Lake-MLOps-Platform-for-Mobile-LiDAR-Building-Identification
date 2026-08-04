@@ -1,3 +1,4 @@
+<img width="1710" height="1107" alt="Screenshot 2026-08-04 at 4 57 30 PM" src="https://github.com/user-attachments/assets/cb8a6472-f74c-44a7-90ad-4699706ac98b" />
 # LiDAR MLOps Platform
 
 > End-to-end geospatial data engineering and MLOps platform that turns raw Mobile LiDAR scans into a governed building inventory — medallion data lake, Airflow orchestration, MLflow tracking, DVC versioning, 3D deep-learning segmentation (**0.9794 test mIoU**), and BigQuery/Looker Studio delivery.
@@ -60,7 +61,7 @@ flowchart LR
     K --> L["GIS exports + BigQuery<br/>Looker Studio inventory dashboard"]
 ```
 
-<img width="1710" height="1107" alt="Platform architecture" src="https://github.com/user-attachments/assets/04b8d8b7-33b0-4d89-bef4-807657ae8840" />
+<img width="1710" height="1107" alt="Screenshot 2026-08-04 at 4 57 56 PM" src="https://github.com/user-attachments/assets/391b525e-bfd0-4a16-83ea-99a5072ebf42" />
 
 ---
 

@@ -1,4 +1,3 @@
-<img width="1710" height="1107" alt="Screenshot 2026-08-04 at 4 57 30 PM" src="https://github.com/user-attachments/assets/cb8a6472-f74c-44a7-90ad-4699706ac98b" />
 # LiDAR MLOps Platform
 
 > End-to-end geospatial data engineering and MLOps platform that turns raw Mobile LiDAR scans into a governed building inventory — medallion data lake, Airflow orchestration, MLflow tracking, DVC versioning, 3D deep-learning segmentation (**0.9794 test mIoU**), and BigQuery/Looker Studio delivery.
